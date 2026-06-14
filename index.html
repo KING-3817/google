@@ -1,12 +1,337 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <title>Google 열기</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Supabase Broadcast Screen Share</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: #fff;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .panel {
+      background: #1b1b1b;
+      border: 1px solid #2e2e2e;
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 6px;
+      color: #bbb;
+    }
+    input, select, button {
+      font-size: 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #333;
+      background: #0f0f0f;
+      color: #fff;
+    }
+    input {
+      min-width: 220px;
+    }
+    button {
+      cursor: pointer;
+      background: #2d6cff;
+      border: none;
+    }
+    button.secondary {
+      background: #333;
+    }
+    button.danger {
+      background: #c0392b;
+    }
+    video, img {
+      width: 100%;
+      max-width: 100%;
+      background: #000;
+      border-radius: 12px;
+      border: 1px solid #333;
+    }
+    .small {
+      font-size: 13px;
+      color: #aaa;
+      line-height: 1.5;
+    }
+    .status {
+      margin-top: 8px;
+      font-size: 14px;
+      color: #9be28f;
+      white-space: pre-wrap;
+    }
+    .hidden {
+      display: none;
+    }
+  </style>
 </head>
 <body>
-    <button onclick="window.open('https://www.google.com', '_blank')">
-        Google 열기
-    </button>
+  <div class="wrap">
+    <h1>Supabase Broadcast Screen Share</h1>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <label>Supabase URL</label>
+          <input id="supabaseUrl" placeholder="https://xxxx.supabase.co" />
+        </div>
+        <div>
+          <label>Supabase ANON KEY</label>
+          <input id="supabaseKey" placeholder="eyJhbGciOi..." />
+        </div>
+        <div>
+          <label>Room</label>
+          <input id="room" value="room-1" />
+        </div>
+        <div>
+          <label>Mode</label>
+          <select id="mode">
+            <option value="sender">송신</option>
+            <option value="viewer">뷰어</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="connectBtn">연결</button>
+        <button id="startBtn" class="secondary" disabled>시작</button>
+        <button id="stopBtn" class="danger" disabled>중지</button>
+      </div>
+
+      <div class="small">
+        같은 room 이름을 쓰면 연결됩니다.<br/>
+        이 방식은 화면을 이미지로 잘라 보내는 방식이라 화질/속도는 낮지만, 한 파일로 바로 테스트하기 좋습니다.
+      </div>
+
+      <div id="status" class="status">대기 중</div>
+    </div>
+
+    <div class="panel">
+      <h2>미리보기 / 수신 화면</h2>
+      <video id="previewVideo" autoplay playsinline muted class="hidden"></video>
+      <img id="viewerImg" alt="viewer" />
+      <canvas id="hiddenCanvas" class="hidden"></canvas>
+    </div>
+  </div>
+
+  <script type="module">
+    import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+    const els = {
+      supabaseUrl: document.getElementById("supabaseUrl"),
+      supabaseKey: document.getElementById("supabaseKey"),
+      room: document.getElementById("room"),
+      mode: document.getElementById("mode"),
+      connectBtn: document.getElementById("connectBtn"),
+      startBtn: document.getElementById("startBtn"),
+      stopBtn: document.getElementById("stopBtn"),
+      status: document.getElementById("status"),
+      previewVideo: document.getElementById("previewVideo"),
+      viewerImg: document.getElementById("viewerImg"),
+      hiddenCanvas: document.getElementById("hiddenCanvas"),
+    };
+
+    let supabase = null;
+    let channel = null;
+    let stream = null;
+    let sendTimer = null;
+    let isConnected = false;
+    let isRunning = false;
+
+    function setStatus(text) {
+      els.status.textContent = text;
+    }
+
+    function setButtons() {
+      els.startBtn.disabled = !isConnected || isRunning;
+      els.stopBtn.disabled = !isRunning;
+    }
+
+    function buildRoomChannel() {
+      const room = els.room.value.trim() || "room-1";
+      return supabase.channel(room, {
+        config: {
+          broadcast: { self: false }
+        }
+      });
+    }
+
+    async function connect() {
+      const url = els.supabaseUrl.value.trim();
+      const key = els.supabaseKey.value.trim();
+
+      if (!url || !key) {
+        setStatus("Supabase URL과 ANON KEY를 넣어줘.");
+        return;
+      }
+
+      try {
+        supabase = createClient(url, key);
+        channel = buildRoomChannel();
+
+        channel.on("broadcast", { event: "frame" }, ({ payload }) => {
+          if (els.mode.value !== "viewer") return;
+          if (!payload?.image) return;
+          els.viewerImg.src = payload.image;
+        });
+
+        channel.subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            isConnected = true;
+            setStatus("연결 완료");
+            setButtons();
+          } else {
+            setStatus("채널 상태: " + status);
+          }
+        });
+
+        els.startBtn.disabled = false;
+        setStatus("연결 시도 중...");
+      } catch (err) {
+        console.error(err);
+        setStatus("연결 실패: " + err.message);
+      }
+    }
+
+    async function startSender() {
+      try {
+        if (!supabase || !channel) {
+          setStatus("먼저 연결해줘.");
+          return;
+        }
+
+        if (els.mode.value !== "sender") {
+          setStatus("모드를 송신으로 바꿔줘.");
+          return;
+        }
+
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false
+        });
+
+        els.previewVideo.srcObject = stream;
+        els.previewVideo.classList.remove("hidden");
+        els.viewerImg.classList.add("hidden");
+
+        await els.previewVideo.play();
+
+        const canvas = els.hiddenCanvas;
+        const ctx = canvas.getContext("2d", { alpha: false });
+
+        const sendFrame = async () => {
+          if (!stream || !els.previewVideo.videoWidth || !els.previewVideo.videoHeight) return;
+
+          const maxWidth = 960;
+          const srcW = els.previewVideo.videoWidth;
+          const srcH = els.previewVideo.videoHeight;
+          const scale = Math.min(1, maxWidth / srcW);
+
+          canvas.width = Math.floor(srcW * scale);
+          canvas.height = Math.floor(srcH * scale);
+
+          ctx.drawImage(
+            els.previewVideo,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+          );
+
+          const image = canvas.toDataURL("image/jpeg", 0.45);
+
+          await channel.send({
+            type: "broadcast",
+            event: "frame",
+            payload: {
+              image,
+              t: Date.now()
+            }
+          });
+        };
+
+        // 낮은 FPS로 보내는 게 그나마 현실적
+        sendTimer = setInterval(sendFrame, 250); // 4 FPS 정도
+        isRunning = true;
+        setButtons();
+        setStatus("송신 중");
+      } catch (err) {
+        console.error(err);
+        setStatus("송신 시작 실패: " + err.message);
+        stopAll();
+      }
+    }
+
+    function stopAll() {
+      if (sendTimer) {
+        clearInterval(sendTimer);
+        sendTimer = null;
+      }
+
+      if (stream) {
+        for (const track of stream.getTracks()) track.stop();
+        stream = null;
+      }
+
+      els.previewVideo.srcObject = null;
+      isRunning = false;
+      setButtons();
+      setStatus("중지됨");
+    }
+
+    els.connectBtn.addEventListener("click", connect);
+
+    els.startBtn.addEventListener("click", async () => {
+      if (els.mode.value === "sender") {
+        await startSender();
+      } else {
+        if (!supabase || !channel) {
+          setStatus("먼저 연결해줘.");
+          return;
+        }
+        els.viewerImg.classList.remove("hidden");
+        els.previewVideo.classList.add("hidden");
+        isRunning = true;
+        setButtons();
+        setStatus("뷰어 대기 중");
+      }
+    });
+
+    els.stopBtn.addEventListener("click", () => {
+      stopAll();
+    });
+
+    els.mode.addEventListener("change", () => {
+      stopAll();
+      if (els.mode.value === "viewer") {
+        els.viewerImg.classList.remove("hidden");
+        els.previewVideo.classList.add("hidden");
+      } else {
+        els.previewVideo.classList.remove("hidden");
+        els.viewerImg.classList.remove("hidden");
+      }
+    });
+
+    // room 바꾸면 새 채널로 다시 붙어야 해서, 간단히 새로 연결 안내
+    els.room.addEventListener("change", () => {
+      if (isConnected) {
+        setStatus("room 변경됨. 다시 연결 버튼을 눌러줘.");
+      }
+    });
+  </script>
 </body>
 </html>
